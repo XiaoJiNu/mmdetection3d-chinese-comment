@@ -174,26 +174,46 @@ class BEVFusion(Base3DDetector):
 
     @torch.no_grad()
     def voxelize(self, points):
+        """将点云数据进行体素化处理。
+
+        Args:
+            points (List[Tensor]): 批次中的点云数据列表。每个元素是一个形状为[N_i, C]的张量，
+                                 其中N_i是该样本的点数，C是每个点的特征维度(如x,y,z,intensity)。
+
+        Returns:
+            tuple:
+                - feats (Tensor): 形状为[M_total, C]的张量，表示所有非空体素的特征。
+                                 如果voxelize_reduce=True，则是每个体素内点的特征平均值。
+                - coords (Tensor): 形状为[M_total, 4]的张量，表示体素坐标(batch_idx, z, y, x)。
+                - sizes (Tensor): 形状为[M_total]的张量，表示每个体素内的点数。
+                                 仅在使用hard_voxelize且需要计算平均值时有意义。
+        """
         feats, coords, sizes = [], [], []
+        # 遍历批次中的每个点云样本
         for k, res in enumerate(points):
+            # 对每个样本调用体素化层(通常是hard_voxelize)
             ret = self.pts_voxel_layer(res)
             if len(ret) == 3:
-                # hard voxelize
+                # hard_voxelize返回: 体素特征、体素坐标、每个体素内点数
                 f, c, n = ret
             else:
+                # dynamic_voxelize只返回特征和坐标
                 assert len(ret) == 2
                 f, c = ret
                 n = None
             feats.append(f)
+            # 在体素坐标前添加批次索引k，将[M_i, 3](z,y,x)变为[M_i, 4](batch_idx,z,y,x)
             coords.append(F.pad(c, (1, 0), mode='constant', value=k))
             if n is not None:
                 sizes.append(n)
 
-        feats = torch.cat(feats, dim=0)
-        coords = torch.cat(coords, dim=0)
+        # 将批次中所有样本的特征、坐标和点数沿第0维拼接
+        feats = torch.cat(feats, dim=0)  # [M_total, max_points, C] 或 [M_total, C]
+        coords = torch.cat(coords, dim=0)  # [M_total, 4]
         if len(sizes) > 0:
-            sizes = torch.cat(sizes, dim=0)
+            sizes = torch.cat(sizes, dim=0)  # [M_total]
             if self.voxelize_reduce:
+                # 计算每个体素内所有点的特征平均值
                 feats = feats.sum(
                     dim=1, keepdim=False) / sizes.type_as(feats).view(-1, 1)
                 feats = feats.contiguous()
